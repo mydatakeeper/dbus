@@ -58,6 +58,7 @@
 #include <netdb.h>
 #include <grp.h>
 #include <arpa/inet.h>
+#include <limits.h>
 
 #ifdef HAVE_ERRNO_H
 #include <errno.h>
@@ -2789,6 +2790,28 @@ dbus_uid_t
 _dbus_geteuid (void)
 {
   return geteuid ();
+}
+
+/**
+ * Append to the string the identity we would like to have when we
+ * authenticate, on UNIX this is the system hostname and on
+ * Windows something else, probably a Windows Hostname string.  No escaping
+ * is required, that is done in dbus-auth.c. The username here
+ * need not be anything human-readable, it can be the machine-readable
+ * form i.e. a container id.
+ *
+ * @param str the string to append to
+ * @returns #FALSE on hostname retrieval error
+ */
+dbus_bool_t
+_dbus_append_hostname_from_current_system (DBusString *str)
+{
+    char hostname[HOST_NAME_MAX+1];
+
+    if (gethostname(hostname, HOST_NAME_MAX) != 0)
+        return FALSE;
+
+    return _dbus_string_append(str, hostname);
 }
 
 /**

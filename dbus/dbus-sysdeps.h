@@ -283,6 +283,8 @@ dbus_bool_t _dbus_unix_user_is_at_console       (dbus_uid_t         uid,
                                                  DBusError         *error);
 dbus_bool_t _dbus_unix_user_is_process_owner    (dbus_uid_t         uid);
 dbus_bool_t _dbus_windows_user_is_process_owner (const char        *windows_sid);
+DBUS_PRIVATE_EXPORT
+dbus_bool_t _dbus_append_hostname_from_current_system  (DBusString        *str);
 
 dbus_bool_t _dbus_append_keyring_directory_for_credentials (DBusString      *directory,
                                                             DBusCredentials *credentials);

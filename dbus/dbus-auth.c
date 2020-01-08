@@ -25,6 +25,7 @@
 #include "dbus-auth.h"
 #include "dbus-string.h"
 #include "dbus-list.h"
+#include "dbus-misc.h"
 #include "dbus-internals.h"
 #include "dbus-keyring.h"
 #include "dbus-sha.h"
@@ -1076,6 +1077,533 @@ handle_client_shutdown_cookie_sha1_mech (DBusAuth *auth)
 }
 
 /*
+ * CONTAINER mechanism
+ */
+
+static dbus_bool_t
+container_server_get_uuid(DBusAuth   *auth,
+                          DBusString *uuid)
+{
+  DBusString filename;
+  DBusString content;
+  DBusError error;
+  DBusList *containers;
+  int start;
+  int end;
+  int len;
+
+  if (!_dbus_string_init(&filename))
+    goto out_0;
+
+  containers = _dbus_credentials_get_containers(auth->desired_identity);
+
+  if (! _dbus_list_length_is_one(&containers))
+    goto out_0;
+
+  if (!_dbus_string_append_printf(&filename, "%s/%s",
+                                  DBUS_SYSTEMD_NSPAWN_RUN_DIR,
+                                  (const char*)_dbus_list_get_first(&containers)))
+    goto out_0;
+
+  if (!_dbus_string_init(&content))
+    goto out_0;
+
+  if (!_dbus_file_get_contents(&content, &filename, &error))
+    {
+      _dbus_verbose ("%s: Error loading container file: %s\n",
+                     DBUS_AUTH_NAME (auth), error.message);
+      goto out_1;
+    }
+
+  if (!_dbus_string_find(&content, 0, "ID=", &start))
+    {
+      _dbus_verbose ("%s: Error loading container file: ID not found\n",
+                     DBUS_AUTH_NAME (auth));
+      goto out_1;
+    }
+
+  start += 3;
+  if (!_dbus_string_find_eol(&content, start, &end, &len))
+    {
+      _dbus_verbose ("%s: Error loading container file: end of ID not found\n",
+                     DBUS_AUTH_NAME (auth));
+      goto out_1;
+    }
+
+  if (_dbus_string_append_len(uuid,
+                              _dbus_string_get_const_data(&content) + start,
+                              end - start))
+    return TRUE;
+
+ out_1:
+  _dbus_string_zero (&content);
+  _dbus_string_free (&content);
+ out_0:
+  _dbus_string_zero (&filename);
+  _dbus_string_free (&filename);
+  return FALSE;
+}
+
+static dbus_bool_t
+container_client_get_uuid(DBusString *uuid)
+{
+  DBusError error;
+  const char *c_str;
+  char *str;
+  int i;
+
+  // Default DBus method to retrieve machine ID
+  str = dbus_try_get_local_machine_id(&error);
+  if (str != NULL)
+    {
+      _dbus_string_append(uuid, str);
+      dbus_free(str);
+
+      return TRUE;
+    }
+  dbus_error_free (&error);
+
+  // Retrieve machine ID from systemd-nspawn environment variables
+  c_str = _dbus_getenv("container_uuid");
+  if (c_str != NULL)
+    {
+      for (i = 0; c_str[i] != '\0'; ++i)
+        // Only keep lowercase hexadecimal chars
+        if (('0' <= c_str[i] && c_str[i] <= '9') ||
+            ('a' <= c_str[i] && c_str[i] <= 'f'))
+          _dbus_string_append_byte(uuid, c_str[i]);
+
+      return TRUE;
+    }
+
+  return FALSE;
+}
+
+/* Returns TRUE but with an empty string hash if the
+ * cookie_id isn't known. As with all this code
+ * TRUE just means we had enough memory.
+ */
+static dbus_bool_t
+container_compute_hash (const DBusString *cookie,
+                        const DBusString *server_challenge,
+                        const DBusString *client_challenge,
+                        DBusString       *hash)
+{
+  DBusString to_hash;
+  dbus_bool_t retval;
+
+  retval = FALSE;
+
+  if (!_dbus_string_init (&to_hash))
+    goto out_0;
+
+  if (!_dbus_string_copy (server_challenge, 0,
+                          &to_hash, _dbus_string_get_length (&to_hash)))
+    goto out_1;
+
+  if (!_dbus_string_append (&to_hash, ":"))
+    goto out_1;
+
+  if (!_dbus_string_copy (client_challenge, 0,
+                          &to_hash, _dbus_string_get_length (&to_hash)))
+    goto out_1;
+
+  if (!_dbus_string_append (&to_hash, ":"))
+    goto out_1;
+
+  if (!_dbus_string_copy (cookie, 0,
+                          &to_hash, _dbus_string_get_length (&to_hash)))
+    goto out_1;
+
+  if (!_dbus_sha_compute (&to_hash, hash))
+    goto out_1;
+
+  retval = TRUE;
+
+ out_1:
+  _dbus_string_zero (&to_hash);
+  _dbus_string_free (&to_hash);
+ out_0:
+  return retval;
+}
+
+static dbus_bool_t
+container_handle_first_client_response (DBusAuth         *auth,
+                                        const DBusString *data)
+{
+  /* We haven't sent a challenge yet, we're expecting a desired
+   * username from the client.
+   */
+  DBusString tmp;
+  DBusString tmp2;
+  dbus_bool_t retval = FALSE;
+  DBusError error = DBUS_ERROR_INIT;
+  DBusCredentials *myself = NULL;
+
+  _dbus_string_set_length (&auth->challenge, 0);
+
+  if (_dbus_string_get_length (data) > 0)
+    {
+      if (_dbus_string_get_length (&auth->identity) > 0)
+        {
+          /* Tried to send two auth identities, wtf */
+          _dbus_verbose ("%s: client tried to send auth identity, but we already have one\n",
+                         DBUS_AUTH_NAME (auth));
+          return send_rejected (auth);
+        }
+      else
+        {
+          /* this is our auth identity */
+          if (!_dbus_string_copy (data, 0, &auth->identity, 0))
+            return FALSE;
+        }
+    }
+
+  if (!_dbus_credentials_add_container (auth->desired_identity,
+                                        _dbus_string_get_const_data(data)))
+    {
+      _dbus_verbose ("%s: Did not get a valid container name from client\n",
+                     DBUS_AUTH_NAME (auth));
+      return send_rejected (auth);
+    }
+
+  if (!_dbus_string_init (&tmp))
+    return FALSE;
+
+  if (!_dbus_string_init (&tmp2))
+    {
+      _dbus_string_free (&tmp);
+      return FALSE;
+    }
+
+  if (!_dbus_generate_random_bytes (&tmp, N_CHALLENGE_BYTES, &error))
+    {
+      if (dbus_error_has_name (&error, DBUS_ERROR_NO_MEMORY))
+        {
+          dbus_error_free (&error);
+          goto out;
+        }
+      else
+        {
+          _DBUS_ASSERT_ERROR_IS_SET (&error);
+          _dbus_verbose ("%s: Error generating challenge: %s\n",
+                         DBUS_AUTH_NAME (auth), error.message);
+          if (send_rejected (auth))
+            retval = TRUE; /* retval is only about mem */
+
+          dbus_error_free (&error);
+          goto out;
+        }
+    }
+
+  _dbus_string_set_length (&auth->challenge, 0);
+  if (!_dbus_string_hex_encode (&tmp, 0, &auth->challenge, 0))
+    goto out;
+
+  if (!_dbus_string_hex_encode (&tmp, 0, &tmp2,
+                                _dbus_string_get_length (&tmp2)))
+    goto out;
+
+  if (!send_data (auth, &tmp2))
+    goto out;
+
+  goto_state (auth, &server_state_waiting_for_data);
+  retval = TRUE;
+
+ out:
+  _dbus_string_zero (&tmp);
+  _dbus_string_free (&tmp);
+  _dbus_string_zero (&tmp2);
+  _dbus_string_free (&tmp2);
+
+  if (myself != NULL)
+    _dbus_credentials_unref (myself);
+
+  return retval;
+}
+
+static dbus_bool_t
+container_handle_second_client_response (DBusAuth         *auth,
+                                         const DBusString *data)
+{
+  /* We are expecting a response which is the hex-encoded client
+   * challenge, space, then SHA-1 hash of the concatenation of our
+   * challenge, ":", client challenge, ":", secret key, all
+   * hex-encoded.
+   */
+  int i;
+  DBusString client_challenge;
+  DBusString client_hash;
+  DBusString uuid;
+  dbus_bool_t retval;
+  DBusString correct_hash;
+
+  retval = FALSE;
+
+  if (!_dbus_string_find_blank (data, 0, &i))
+    {
+      _dbus_verbose ("%s: no space separator in client response\n",
+                     DBUS_AUTH_NAME (auth));
+      return send_rejected (auth);
+    }
+
+  if (!_dbus_string_init (&client_challenge))
+    goto out_0;
+
+  if (!_dbus_string_init (&client_hash))
+    goto out_1;
+
+  if (!_dbus_string_copy_len (data, 0, i, &client_challenge,
+                              0))
+    goto out_2;
+
+  _dbus_string_skip_blank (data, i, &i);
+
+  if (!_dbus_string_copy_len (data, i,
+                              _dbus_string_get_length (data) - i,
+                              &client_hash,
+                              0))
+    goto out_2;
+
+  if (_dbus_string_get_length (&client_challenge) == 0 ||
+      _dbus_string_get_length (&client_hash) == 0)
+    {
+      _dbus_verbose ("%s: zero-length client challenge or hash\n",
+                     DBUS_AUTH_NAME (auth));
+      if (send_rejected (auth))
+        retval = TRUE;
+      goto out_2;
+    }
+
+  if (!_dbus_string_init (&uuid))
+    goto out_2;
+
+  if (!container_server_get_uuid(auth, &uuid))
+    {
+      if (send_rejected (auth))
+        retval = TRUE;
+      goto out_3;
+    }
+
+  if (!_dbus_string_init (&correct_hash))
+    goto out_3;
+
+  if (!container_compute_hash (&uuid,
+                               &auth->challenge,
+                               &client_challenge,
+                               &correct_hash))
+    goto out_4;
+
+  /* if cookie_id was invalid, then we get an empty hash */
+  if (_dbus_string_get_length (&correct_hash) == 0)
+    {
+      if (send_rejected (auth))
+        retval = TRUE;
+      goto out_4;
+    }
+
+  if (!_dbus_string_equal (&client_hash, &correct_hash))
+    {
+      if (send_rejected (auth))
+        retval = TRUE;
+      goto out_4;
+    }
+
+  if (!_dbus_credentials_add_credentials (auth->authorized_identity,
+                                          auth->desired_identity))
+    goto out_4;
+
+  if (!send_ok (auth))
+    goto out_4;
+
+  _dbus_verbose ("%s: authenticated client using DBUS_COOKIE_SHA1\n",
+                 DBUS_AUTH_NAME (auth));
+
+  retval = TRUE;
+
+ out_4:
+  _dbus_string_zero (&correct_hash);
+  _dbus_string_free (&correct_hash);
+ out_3:
+  _dbus_string_zero (&uuid);
+  _dbus_string_free (&uuid);
+ out_2:
+  _dbus_string_zero (&client_hash);
+  _dbus_string_free (&client_hash);
+ out_1:
+  _dbus_string_free (&client_challenge);
+ out_0:
+  return retval;
+}
+
+static dbus_bool_t
+handle_server_data_container_mech (DBusAuth         *auth,
+                                   const DBusString *data)
+{
+  if (!_dbus_string_get_length (&auth->challenge))
+    return container_handle_first_client_response (auth, data);
+  else
+    return container_handle_second_client_response (auth, data);
+}
+
+static void
+handle_server_shutdown_container_mech (DBusAuth *auth)
+{
+  _dbus_string_set_length (&auth->challenge, 0);
+}
+
+static dbus_bool_t
+handle_client_initial_response_container_mech (DBusAuth         *auth,
+                                               DBusString       *response)
+{
+  /* We always append our container hostname as an initial response,
+   * so the server doesn't have to send back an empty challenge to
+   * check whether we want to specify an identity. i.e. this avoids a
+   * round trip that the spec for the CONTAINER mechanism otherwise requires.
+   */
+  DBusString plaintext;
+
+  if (!_dbus_string_init (&plaintext))
+    return FALSE;
+
+  if (!_dbus_append_hostname_from_current_system (&plaintext))
+    goto failed;
+
+  if (!_dbus_string_hex_encode (&plaintext, 0,
+                response,
+                _dbus_string_get_length (response)))
+    goto failed;
+
+  _dbus_string_free (&plaintext);
+
+  return TRUE;
+
+ failed:
+  _dbus_string_free (&plaintext);
+  return FALSE;
+}
+
+static dbus_bool_t
+handle_client_data_container_mech (DBusAuth         *auth,
+                                   const DBusString *server_challenge)
+{
+  /* The data we get from the server should be the cookie context
+   * name, the cookie ID, and the server challenge, separated by
+   * spaces. We send back our challenge string and the correct hash.
+   */
+  dbus_bool_t retval = FALSE;
+  DBusString client_challenge;
+  DBusString correct_hash;
+  DBusString uuid;
+  DBusString tmp;
+  DBusError error = DBUS_ERROR_INIT;
+
+  if (_dbus_string_get_length (server_challenge) == 0)
+    {
+      if (send_error (auth, "Empty server challenge string"))
+        retval = TRUE;
+      goto out_0;
+    }
+
+  if (!_dbus_string_init (&tmp))
+    goto out_0;
+
+  if (!_dbus_generate_random_bytes (&tmp, N_CHALLENGE_BYTES, &error))
+    {
+      if (dbus_error_has_name (&error, DBUS_ERROR_NO_MEMORY))
+        {
+          dbus_error_free (&error);
+          goto out_1;
+        }
+      else
+        {
+          _DBUS_ASSERT_ERROR_IS_SET (&error);
+
+          _dbus_verbose ("%s: Failed to generate challenge: %s\n",
+                         DBUS_AUTH_NAME (auth), error.message);
+
+          if (send_error (auth, "Failed to generate challenge"))
+            retval = TRUE; /* retval is only about mem */
+
+          dbus_error_free (&error);
+          goto out_1;
+        }
+    }
+
+  if (!_dbus_string_init (&client_challenge))
+    goto out_1;
+
+  if (!_dbus_string_hex_encode (&tmp, 0, &client_challenge, 0))
+    goto out_2;
+
+  if (!_dbus_string_init (&uuid))
+    goto out_2;
+
+  if (!container_client_get_uuid(&uuid))
+    {
+      /* couldn't find the UUID or something */
+      if (send_error (auth, "Don't have the requested UUID"))
+        retval = TRUE;
+      goto out_3;
+    }
+
+  if (!_dbus_string_init (&correct_hash))
+    goto out_3;
+
+  if (!container_compute_hash (&uuid,
+                               server_challenge,
+                               &client_challenge,
+                               &correct_hash))
+    goto out_4;
+
+  if (_dbus_string_get_length (&correct_hash) == 0)
+    {
+      /* couldn't compute the hash correctly */
+      if (send_error (auth, "Don't have the requested hash"))
+        retval = TRUE;
+      goto out_4;
+    }
+
+  _dbus_string_set_length (&tmp, 0);
+
+  if (!_dbus_string_copy (&client_challenge, 0, &tmp,
+                          _dbus_string_get_length (&tmp)))
+    goto out_4;
+
+  if (!_dbus_string_append (&tmp, " "))
+    goto out_4;
+
+  if (!_dbus_string_copy (&correct_hash, 0, &tmp,
+                          _dbus_string_get_length (&tmp)))
+    goto out_4;
+
+  if (!send_data (auth, &tmp))
+    goto out_4;
+
+  retval = TRUE;
+
+ out_4:
+  _dbus_string_zero (&correct_hash);
+  _dbus_string_free (&correct_hash);
+ out_3:
+  _dbus_string_zero (&uuid);
+  _dbus_string_free (&uuid);
+ out_2:
+  _dbus_string_free (&client_challenge);
+ out_1:
+  _dbus_string_zero (&tmp);
+  _dbus_string_free (&tmp);
+ out_0:
+  return retval;
+}
+
+static void
+handle_client_shutdown_container_mech (DBusAuth *auth)
+{
+
+}
+
+/*
  * EXTERNAL mechanism
  */
 
@@ -1222,8 +1750,8 @@ handle_client_initial_response_external_mech (DBusAuth         *auth,
     goto failed;
 
   if (!_dbus_string_hex_encode (&plaintext, 0,
-				response,
-				_dbus_string_get_length (response)))
+                response,
+                _dbus_string_get_length (response)))
     goto failed;
 
   _dbus_string_free (&plaintext);
@@ -1370,6 +1898,14 @@ all_mechanisms[] = {
     handle_client_data_external_mech,
     NULL, NULL,
     handle_client_shutdown_external_mech },
+  { "CONTAINER",
+    handle_server_data_container_mech,
+    NULL, NULL,
+    handle_server_shutdown_container_mech,
+    handle_client_initial_response_container_mech,
+    handle_client_data_container_mech,
+    NULL, NULL,
+    handle_client_shutdown_container_mech },
   { "DBUS_COOKIE_SHA1",
     handle_server_data_cookie_sha1_mech,
     NULL, NULL,

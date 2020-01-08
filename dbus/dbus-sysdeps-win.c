@@ -3316,6 +3316,13 @@ _dbus_lookup_session_address (dbus_bool_t *supported,
   return TRUE;
 }
 
+dbus_bool_t
+_dbus_append_hostname_from_current_system (DBusString *str)
+{
+    /* TODO */
+    return FALSE;
+}
+
 /**
  * Appends the directory in which a keyring for the given credentials
  * should be stored.  The credentials should have either a Windows or
