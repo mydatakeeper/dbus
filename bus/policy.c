@@ -131,12 +131,13 @@ struct BusPolicy
 {
   int refcount;
 
-  DBusList *default_rules;         /**< Default policy rules */
-  DBusList *mandatory_rules;       /**< Mandatory policy rules */
-  DBusHashTable *rules_by_uid;     /**< per-UID policy rules */
-  DBusHashTable *rules_by_gid;     /**< per-GID policy rules */
-  DBusList *at_console_true_rules; /**< console user policy rules where at_console="true"*/
-  DBusList *at_console_false_rules; /**< console user policy rules where at_console="false"*/
+  DBusList *default_rules;            /**< Default policy rules */
+  DBusList *mandatory_rules;          /**< Mandatory policy rules */
+  DBusHashTable *rules_by_uid;        /**< per-UID policy rules */
+  DBusHashTable *rules_by_gid;        /**< per-GID policy rules */
+  DBusHashTable *rules_by_container;  /**< per-container name policy rules */
+  DBusList *at_console_true_rules;    /**< console user policy rules where at_console="true"*/
+  DBusList *at_console_false_rules;   /**< console user policy rules where at_console="false"*/
 };
 
 static void
@@ -184,6 +185,12 @@ bus_policy_new (void)
                                                NULL,
                                                free_rule_list_func);
   if (policy->rules_by_gid == NULL)
+    goto failed;
+
+  policy->rules_by_container = _dbus_hash_table_new (DBUS_HASH_STRING,
+                                                     NULL,
+                                                     free_rule_list_func);
+  if (policy->rules_by_container == NULL)
     goto failed;
 
   return policy;
@@ -235,6 +242,12 @@ bus_policy_unref (BusPolicy *policy)
           _dbus_hash_table_unref (policy->rules_by_gid);
           policy->rules_by_gid = NULL;
         }
+
+      if (policy->rules_by_container)
+        {
+          _dbus_hash_table_unref (policy->rules_by_container);
+          policy->rules_by_container = NULL;
+        }
       
       dbus_free (policy);
     }
@@ -282,6 +295,7 @@ bus_policy_create_client_policy (BusPolicy      *policy,
 {
   BusClientPolicy *client;
   dbus_uid_t uid;
+  char *container;
   dbus_bool_t at_console;
 
   _dbus_assert (dbus_connection_get_is_authenticated (connection));
@@ -362,6 +376,25 @@ bus_policy_create_client_policy (BusPolicy      *policy,
         {
           goto nomem;
         }
+    }
+
+  if (dbus_connection_get_container_name (connection, &container))
+    {
+      if (_dbus_hash_table_get_n_entries (policy->rules_by_container) > 0)
+        {
+          DBusList **list;
+
+          list = _dbus_hash_table_lookup_string (policy->rules_by_container,
+                                                container);
+
+          if (list != NULL)
+            {
+              if (!add_list_to_client (list, client))
+                goto nomem;
+            }
+        }
+
+        dbus_free(container);
     }
 
   if (!add_list_to_client (&policy->mandatory_rules,
@@ -544,6 +577,30 @@ get_list (DBusHashTable *hash,
   return list;
 }
 
+static DBusList**
+get_list_str (DBusHashTable *hash,
+              char          *key)
+{
+  DBusList **list;
+
+  list = _dbus_hash_table_lookup_string (hash, key);
+
+  if (list == NULL)
+    {
+      list = dbus_new0 (DBusList*, 1);
+      if (list == NULL)
+        return NULL;
+
+      if (!_dbus_hash_table_insert_string (hash, key, list))
+        {
+          dbus_free (list);
+          return NULL;
+        }
+    }
+
+  return list;
+}
+
 dbus_bool_t
 bus_policy_append_user_rule (BusPolicy      *policy,
                              dbus_uid_t      uid,
@@ -583,6 +640,27 @@ bus_policy_append_group_rule (BusPolicy      *policy,
 
   return TRUE;
 }
+
+dbus_bool_t
+bus_policy_append_container_rule (BusPolicy      *policy,
+                                  char           *container,
+                                  BusPolicyRule  *rule)
+{
+  DBusList **list;
+
+  list = get_list_str (policy->rules_by_container, container);
+
+  if (list == NULL)
+    return FALSE;
+
+  if (!_dbus_list_append (list, rule))
+    return FALSE;
+
+  bus_policy_rule_ref (rule);
+
+  return TRUE;
+}
+
 
 dbus_bool_t
 bus_policy_append_console_rule (BusPolicy      *policy,
@@ -691,6 +769,10 @@ bus_policy_merge (BusPolicy *policy,
   
   if (!merge_id_hash (policy->rules_by_gid,
                       to_absorb->rules_by_gid))
+    return FALSE;
+
+  if (!merge_id_hash (policy->rules_by_container,
+                      to_absorb->rules_by_container))
     return FALSE;
 
   return TRUE;

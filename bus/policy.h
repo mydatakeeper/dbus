@@ -142,6 +142,9 @@ dbus_bool_t      bus_policy_append_user_rule      (BusPolicy        *policy,
 dbus_bool_t      bus_policy_append_group_rule     (BusPolicy        *policy,
                                                    dbus_gid_t        gid,
                                                    BusPolicyRule    *rule);
+dbus_bool_t      bus_policy_append_container_rule (BusPolicy        *policy,
+                                                   char             *container,
+                                                   BusPolicyRule    *rule);
 dbus_bool_t      bus_policy_append_console_rule   (BusPolicy        *policy,
                                                    dbus_bool_t        at_console,
                                                    BusPolicyRule    *rule);
