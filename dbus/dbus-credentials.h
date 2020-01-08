@@ -33,6 +33,7 @@ DBUS_BEGIN_DECLS
 typedef enum {
   DBUS_CREDENTIAL_UNIX_PROCESS_ID,
   DBUS_CREDENTIAL_UNIX_USER_ID,
+  DBUS_CREDENTIAL_UNIX_CONTAINERS,
   DBUS_CREDENTIAL_ADT_AUDIT_DATA_ID,
   DBUS_CREDENTIAL_LINUX_SECURITY_LABEL,
   DBUS_CREDENTIAL_WINDOWS_SID
@@ -51,7 +52,13 @@ dbus_bool_t      _dbus_credentials_add_pid                  (DBusCredentials    
                                                              dbus_pid_t          pid);
 DBUS_PRIVATE_EXPORT
 dbus_bool_t      _dbus_credentials_add_unix_uid             (DBusCredentials    *credentials,
-                                                             dbus_uid_t          uid);
+                                                             dbus_pid_t          pid);
+DBUS_PRIVATE_EXPORT
+dbus_bool_t      _dbus_credentials_add_container            (DBusCredentials    *credentials,
+                                                             const char         *container);
+DBUS_PRIVATE_EXPORT
+dbus_bool_t      _dbus_credentials_add_containers           (DBusCredentials    *credentials,
+                                                             DBusList           *containers);
 DBUS_PRIVATE_EXPORT
 dbus_bool_t      _dbus_credentials_add_windows_sid          (DBusCredentials    *credentials,
                                                              const char         *windows_sid);
@@ -67,6 +74,8 @@ DBUS_PRIVATE_EXPORT
 dbus_pid_t       _dbus_credentials_get_pid                  (DBusCredentials    *credentials);
 DBUS_PRIVATE_EXPORT
 dbus_uid_t       _dbus_credentials_get_unix_uid             (DBusCredentials    *credentials);
+DBUS_PRIVATE_EXPORT
+DBusList*        _dbus_credentials_get_containers           (DBusCredentials    *credentials);
 DBUS_PRIVATE_EXPORT
 const char*      _dbus_credentials_get_windows_sid          (DBusCredentials    *credentials);
 const char *     _dbus_credentials_get_linux_security_label (DBusCredentials    *credentials);
@@ -91,6 +100,9 @@ DBUS_PRIVATE_EXPORT
 DBusCredentials* _dbus_credentials_copy                     (DBusCredentials    *credentials);
 DBUS_PRIVATE_EXPORT
 dbus_bool_t      _dbus_credentials_same_user                (DBusCredentials    *credentials,
+                                                             DBusCredentials    *other_credentials);
+DBUS_PRIVATE_EXPORT
+dbus_bool_t      _dbus_credentials_owns_container           (DBusCredentials    *credentials,
                                                              DBusCredentials    *other_credentials);
 DBUS_PRIVATE_EXPORT
 dbus_bool_t      _dbus_credentials_to_string_append         (DBusCredentials    *credentials,

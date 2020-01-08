@@ -24,6 +24,7 @@
 #include <string.h>
 #include "dbus-credentials.h"
 #include "dbus-internals.h"
+#include "dbus-list.h"
 
 /**
  * @defgroup DBusCredentials Credentials provable through authentication
@@ -49,6 +50,7 @@ struct DBusCredentials {
   int refcount;
   dbus_uid_t unix_uid;
   dbus_pid_t pid;
+  DBusList* containers;
   char *windows_sid;
   char *linux_security_label;
   void *adt_audit_data;
@@ -79,6 +81,7 @@ _dbus_credentials_new (void)
   creds->refcount = 1;
   creds->unix_uid = DBUS_UID_UNSET;
   creds->pid = DBUS_PID_UNSET;
+  creds->containers = NULL;
   creds->windows_sid = NULL;
   creds->linux_security_label = NULL;
   creds->adt_audit_data = NULL;
@@ -173,6 +176,42 @@ _dbus_credentials_add_unix_uid(DBusCredentials    *credentials,
 }
 
 /**
+ * Add a container name to the credentials.
+ *
+ * @param credentials the object
+ * @param container the container name
+ * @returns #FALSE if no memory
+ */
+dbus_bool_t
+_dbus_credentials_add_container(DBusCredentials    *credentials,
+                                const char         *container)
+{
+  return _dbus_list_append(&credentials->containers, strdup(container));
+}
+
+/**
+ * Add container names to the credentials.
+ *
+ * @param credentials the object
+ * @param containers a list of container names
+ * @returns #FALSE if no memory
+ */
+dbus_bool_t
+_dbus_credentials_add_containers(DBusCredentials    *credentials,
+                                 DBusList           *containers)
+{
+  DBusList *copy;
+
+  if (!_dbus_list_copy(&containers, &copy))
+    return FALSE;
+
+  _dbus_list_clear (&credentials->containers);
+  credentials->containers = copy;
+
+  return TRUE;
+}
+
+/**
  * Add a Windows user SID to the credentials.
  *
  * @param credentials the object
@@ -261,6 +300,8 @@ _dbus_credentials_include (DBusCredentials    *credentials,
       return credentials->pid != DBUS_PID_UNSET;
     case DBUS_CREDENTIAL_UNIX_USER_ID:
       return credentials->unix_uid != DBUS_UID_UNSET;
+    case DBUS_CREDENTIAL_UNIX_CONTAINERS:
+      return credentials->containers != NULL;
     case DBUS_CREDENTIAL_WINDOWS_SID:
       return credentials->windows_sid != NULL;
     case DBUS_CREDENTIAL_LINUX_SECURITY_LABEL:
@@ -297,6 +338,19 @@ dbus_uid_t
 _dbus_credentials_get_unix_uid (DBusCredentials    *credentials)
 {
   return credentials->unix_uid;
+}
+
+/**
+ * Gets the container names in the credentials, or #NULL if
+ * the credentials object doesn't contain a container name.
+ *
+ * @param credentials the object
+ * @returns containers name
+ */
+DBusList*
+_dbus_credentials_get_containers (DBusCredentials    *credentials)
+{
+  return credentials->containers;
 }
 
 /**
@@ -368,6 +422,10 @@ _dbus_credentials_are_superset (DBusCredentials    *credentials,
      possible_subset->pid == credentials->pid) &&
     (possible_subset->unix_uid == DBUS_UID_UNSET ||
      possible_subset->unix_uid == credentials->unix_uid) &&
+    (possible_subset->containers == NULL ||
+     (credentials->containers && _dbus_list_cmp (&possible_subset->containers,
+                                                 &credentials->containers,
+                                                 (int (*)(void*, void*))strcmp) == 0)) &&
     (possible_subset->windows_sid == NULL ||
      (credentials->windows_sid && strcmp (possible_subset->windows_sid,
                                           credentials->windows_sid) == 0)) &&
@@ -393,6 +451,7 @@ _dbus_credentials_are_empty (DBusCredentials    *credentials)
   return
     credentials->pid == DBUS_PID_UNSET &&
     credentials->unix_uid == DBUS_UID_UNSET &&
+    credentials->containers == NULL &&
     credentials->windows_sid == NULL &&
     credentials->linux_security_label == NULL &&
     credentials->adt_audit_data == NULL;
@@ -430,6 +489,9 @@ _dbus_credentials_add_credentials (DBusCredentials    *credentials,
                                       other_credentials) &&
     _dbus_credentials_add_credential (credentials,
                                       DBUS_CREDENTIAL_UNIX_USER_ID,
+                                      other_credentials) &&
+    _dbus_credentials_add_credential (credentials,
+                                      DBUS_CREDENTIAL_UNIX_CONTAINERS,
                                       other_credentials) &&
     _dbus_credentials_add_credential (credentials,
                                       DBUS_CREDENTIAL_ADT_AUDIT_DATA_ID,
@@ -471,6 +533,12 @@ _dbus_credentials_add_credential (DBusCredentials    *credentials,
       if (!_dbus_credentials_add_unix_uid (credentials, other_credentials->unix_uid))
         return FALSE;
     }
+  else if (which == DBUS_CREDENTIAL_UNIX_CONTAINERS &&
+           other_credentials->containers != NULL)
+    {
+      if (!_dbus_credentials_add_containers (credentials, other_credentials->containers))
+        return FALSE;
+    }
   else if (which == DBUS_CREDENTIAL_WINDOWS_SID &&
            other_credentials->windows_sid != NULL)
     {
@@ -504,6 +572,8 @@ _dbus_credentials_clear (DBusCredentials    *credentials)
 {
   credentials->pid = DBUS_PID_UNSET;
   credentials->unix_uid = DBUS_UID_UNSET;
+  _dbus_list_clear (&credentials->containers);
+  credentials->containers = NULL;
   dbus_free (credentials->windows_sid);
   credentials->windows_sid = NULL;
   dbus_free (credentials->linux_security_label);
@@ -561,6 +631,36 @@ _dbus_credentials_same_user (DBusCredentials    *credentials,
       strcmp (credentials->windows_sid, other_credentials->windows_sid) == 0));
 }
 
+static void find_string(void *str, void *arg)
+{
+    struct {
+        const char *container;
+        dbus_bool_t ret;
+    } *data = arg;
+
+    data->ret |= strcmp(data->container, str) == 0;
+}
+
+dbus_bool_t
+_dbus_credentials_owns_container (DBusCredentials    *credentials,
+                                  DBusCredentials    *other_credentials)
+{
+    struct {
+        const char *container;
+        dbus_bool_t ret;
+    } data;
+
+    if (!_dbus_list_length_is_one(&other_credentials->containers))
+        return FALSE;
+
+    data.container = _dbus_list_get_first(&other_credentials->containers);
+
+    _dbus_list_foreach(&credentials->containers, &find_string, &data);
+
+    return data.ret;
+}
+
+
 /**
  * Convert the credentials in this object to a human-readable
  * string format, and append to the given string.
@@ -585,6 +685,16 @@ _dbus_credentials_to_string_append (DBusCredentials    *credentials,
   if (credentials->pid != DBUS_PID_UNSET)
     {
       if (!_dbus_string_append_printf (string, "%spid=" DBUS_PID_FORMAT, join ? " " : "", credentials->pid))
+        goto oom;
+      join = TRUE;
+    }
+  else
+    join = FALSE;
+  if (credentials->containers != NULL)
+    {
+      if (!_dbus_string_append_printf (string, "%scontainers=", join ? " " : ""))
+        goto oom;
+      if (!_dbus_list_to_string_append (&credentials->containers, string, ","))
         goto oom;
       join = TRUE;
     }
