@@ -5277,6 +5277,41 @@ dbus_connection_get_unix_process_id (DBusConnection *connection,
 }
 
 /**
+ * Gets the process ID of the connection if any.
+ * Returns #TRUE if the pid is filled in.
+ * Always returns #FALSE prior to authenticating the
+ * connection.
+ *
+ * @param connection the connection
+ * @param pid return location for the process ID
+ * @returns #TRUE if uid is filled in with a valid process ID
+ */
+dbus_bool_t
+dbus_connection_get_container_name (DBusConnection *connection,
+				    char  **container_p)
+{
+  dbus_bool_t result;
+
+  _dbus_assert (connection != NULL);
+  _dbus_assert (container_p != NULL);
+
+  CONNECTION_LOCK (connection);
+
+  if (!_dbus_transport_try_to_authenticate (connection->transport))
+    result = FALSE;
+  else
+    result = _dbus_transport_get_container_name (connection->transport,
+                                                       container_p);
+#ifndef __linux__
+  _dbus_assert (!result);
+#endif
+
+  CONNECTION_UNLOCK (connection);
+
+  return result;
+}
+
+/**
  * Gets the ADT audit data of the connection if any.
  * Returns #TRUE if the structure pointer is returned.
  * Always returns #FALSE prior to authenticating the

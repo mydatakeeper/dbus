@@ -266,6 +266,9 @@ DBUS_EXPORT
 dbus_bool_t        dbus_connection_get_unix_process_id          (DBusConnection             *connection,
                                                                  unsigned long              *pid);
 DBUS_EXPORT
+dbus_bool_t        dbus_connection_get_container_name           (DBusConnection             *connection,
+                                                                 char                      **pid);
+DBUS_EXPORT
 dbus_bool_t        dbus_connection_get_adt_audit_session_data   (DBusConnection             *connection,
                                                                  void                      **data,
                                                                  dbus_int32_t               *data_size);
