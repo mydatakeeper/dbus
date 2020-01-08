@@ -651,8 +651,14 @@ auth_via_default_rules (DBusTransport *transport)
       return FALSE;
     }
               
-  if (transport->allow_anonymous ||
-      _dbus_credentials_get_unix_uid (auth_identity) == 0 ||
+  if (transport->allow_anonymous)
+    {
+      _dbus_verbose ("Client authorized as anonymous\n");
+      /* We have authenticated! */
+      allow = TRUE;
+
+    }
+  else if (_dbus_credentials_get_unix_uid (auth_identity) == 0 ||
       _dbus_credentials_same_user (our_identity,
                                    auth_identity))
     {
@@ -666,6 +672,14 @@ auth_via_default_rules (DBusTransport *transport)
                          " matching our UID "DBUS_UID_FORMAT"\n",
                          _dbus_credentials_get_unix_uid(auth_identity),
                          _dbus_credentials_get_unix_uid(our_identity));
+      /* We have authenticated! */
+      allow = TRUE;
+    }
+  else if (_dbus_credentials_owns_container (our_identity, auth_identity))
+    {
+      DBusList *containers = _dbus_credentials_get_containers(auth_identity);
+      _dbus_verbose ("Client authorized as container %s\n",
+                     (const char*)_dbus_list_get_first(&containers));
       /* We have authenticated! */
       allow = TRUE;
     }
@@ -1388,6 +1402,44 @@ _dbus_transport_get_unix_process_id (DBusTransport *transport,
     return FALSE;
 }
 
+/**
+ * See dbus_connection_get_unix_process_id().
+ *
+ * @param transport the transport
+ * @param pid return location for the process ID
+ * @returns #TRUE if uid is filled in with a valid process ID
+ */
+dbus_bool_t
+_dbus_transport_get_container_name (DBusTransport *transport,
+             char **container_p)
+{
+  DBusCredentials *auth_identity;
+  DBusList* list;
+
+  *container_p = NULL;
+
+  if (!transport->authenticated)
+    return FALSE;
+
+  auth_identity = _dbus_auth_get_identity (transport->auth);
+
+  if (_dbus_credentials_include (auth_identity,
+                                 DBUS_CREDENTIAL_UNIX_CONTAINERS))
+    {
+      list = _dbus_credentials_get_containers (auth_identity);
+
+      if (!_dbus_list_length_is_one(&list))
+        return FALSE;
+      /* If no memory, we are supposed to return TRUE and set NULL */
+      *container_p = _dbus_strdup ((const char*)_dbus_list_get_first(&list));
+
+      return TRUE;
+    }
+  else
+    {
+      return FALSE;
+    }
+}
 /**
  * See dbus_connection_get_adt_audit_session_data().
  *

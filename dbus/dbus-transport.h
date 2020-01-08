@@ -76,6 +76,8 @@ dbus_bool_t        _dbus_transport_get_unix_user          (DBusTransport        
                                                            unsigned long              *uid);
 dbus_bool_t        _dbus_transport_get_unix_process_id     (DBusTransport              *transport,
                                                            unsigned long              *pid);
+dbus_bool_t        _dbus_transport_get_container_name      (DBusTransport              *transport,
+                                                           char                      **container_p);
 dbus_bool_t        _dbus_transport_get_adt_audit_session_data (DBusTransport              *transport,
                                                                void                      **data,
                                                                int                        *data_size);
