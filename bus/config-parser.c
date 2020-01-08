@@ -45,6 +45,7 @@ typedef enum
   POLICY_MANDATORY,
   POLICY_USER,
   POLICY_GROUP,
+  POLICY_CONTAINER,
   POLICY_CONSOLE
 } PolicyType;
 
@@ -66,7 +67,12 @@ typedef struct
     struct
     {
       PolicyType type;
-      unsigned long gid_uid_or_at_console;      
+      union {
+        dbus_uid_t uid;
+        dbus_gid_t gid;
+        char* container;
+        dbus_bool_t at_console;
+      } value;
     } policy;
 
     struct
@@ -1097,6 +1103,7 @@ start_busconfig_child (BusConfigParser   *parser,
       const char *context;
       const char *user;
       const char *group;
+      const char *container;
       const char *at_console;
 
       if ((e = push_element (parser, ELEMENT_POLICY)) == NULL)
@@ -1114,20 +1121,25 @@ start_busconfig_child (BusConfigParser   *parser,
                               "context", &context,
                               "user", &user,
                               "group", &group,
+                              "container", &container,
                               "at_console", &at_console,
                               NULL))
         return FALSE;
 
       if (((context && user) ||
            (context && group) ||
+           (context && container) ||
            (context && at_console)) ||
            ((user && group) ||
+           (user && container) ||
            (user && at_console)) ||
-           (group && at_console) ||
-          !(context || user || group || at_console))
+           ((group && container) ||
+           (group && at_console)) ||
+           (container && at_console) ||
+          !(context || user || group || container || at_console))
         {
           dbus_set_error (error, DBUS_ERROR_FAILED,
-                          "<policy> element must have exactly one of (context|user|group|at_console) attributes");
+                          "<policy> element must have exactly one of (context|user|group|container|at_console) attributes");
           return FALSE;
         }
 
@@ -1155,7 +1167,7 @@ start_busconfig_child (BusConfigParser   *parser,
           _dbus_string_init_const (&username, user);
 
           if (_dbus_parse_unix_user_from_config (&username,
-                                                 &e->d.policy.gid_uid_or_at_console))
+                                                 &e->d.policy.value.uid))
             e->d.policy.type = POLICY_USER;
           else
             _dbus_warn ("Unknown username \"%s\" in message bus configuration file",
@@ -1167,11 +1179,16 @@ start_busconfig_child (BusConfigParser   *parser,
           _dbus_string_init_const (&group_name, group);
 
           if (_dbus_parse_unix_group_from_config (&group_name,
-                                                  &e->d.policy.gid_uid_or_at_console))
+                                                  &e->d.policy.value.gid))
             e->d.policy.type = POLICY_GROUP;
           else
             _dbus_warn ("Unknown group \"%s\" in message bus configuration file",
                         group);          
+        }
+      else if (container != NULL)
+        {
+          e->d.policy.value.container = _dbus_strdup(container);
+          e->d.policy.type = POLICY_CONTAINER;
         }
       else if (at_console != NULL)
         {
@@ -1179,7 +1196,7 @@ start_busconfig_child (BusConfigParser   *parser,
            t = (strcmp (at_console, "true") == 0);
            if (t || strcmp (at_console, "false") == 0)
              {
-               e->d.policy.gid_uid_or_at_console = t; 
+               e->d.policy.value.at_console = t;
                e->d.policy.type = POLICY_CONSOLE;
              }  
            else
@@ -1847,7 +1864,7 @@ append_rule_from_element (BusConfigParser   *parser,
               goto failed;
             }
           
-          if (!bus_policy_append_user_rule (parser->policy, pe->d.policy.gid_uid_or_at_console,
+          if (!bus_policy_append_user_rule (parser->policy, pe->d.policy.value.uid,
                                             rule))
             goto nomem;
           break;
@@ -1860,14 +1877,17 @@ append_rule_from_element (BusConfigParser   *parser,
               goto failed;
             }
           
-          if (!bus_policy_append_group_rule (parser->policy, pe->d.policy.gid_uid_or_at_console,
+          if (!bus_policy_append_group_rule (parser->policy, pe->d.policy.value.gid,
                                              rule))
             goto nomem;
           break;
-        
-
+        case POLICY_CONTAINER:
+          if (!bus_policy_append_container_rule (parser->policy, pe->d.policy.value.container,
+                                                 rule))
+            goto nomem;
+          break;
         case POLICY_CONSOLE:
-          if (!bus_policy_append_console_rule (parser->policy, pe->d.policy.gid_uid_or_at_console,
+          if (!bus_policy_append_console_rule (parser->policy, pe->d.policy.value.at_console,
                                                rule))
             goto nomem;
           break;
@@ -3342,7 +3362,7 @@ elements_equal (const Element *a,
     case ELEMENT_POLICY:
       if (a->d.policy.type != b->d.policy.type)
 	return FALSE;
-      if (a->d.policy.gid_uid_or_at_console != b->d.policy.gid_uid_or_at_console)
+      if (a->d.policy.value != b->d.policy.value)
 	return FALSE;
       break;
 
