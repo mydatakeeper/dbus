@@ -487,6 +487,41 @@ _dbus_list_find_last (DBusList **list,
   return NULL;
 }
 
+int
+_dbus_list_cmp (DBusList **list1,
+                DBusList **list2,
+                DBusCompareFunction function)
+{
+  int len1;
+  int len2;
+  DBusList *link1;
+  DBusList *link2;
+  int ret;
+
+  len1 = _dbus_list_get_length(list1);
+  len2 = _dbus_list_get_length(list2);
+
+  if (len1 != len2)
+      return len1 - len2;
+
+  link1 = *list1;
+  link2 = *list2;
+  while (link1 != NULL && link2 != NULL)
+    {
+      DBusList *next1 = _dbus_list_get_next_link (list1, link1);
+      DBusList *next2 = _dbus_list_get_next_link (list2, link2);
+
+      ret = (* function) (link1->data, link2->data);
+      if (ret != 0)
+        return ret;
+
+      link1 = next1;
+      link2 = next2;
+    }
+
+  return 0;
+}
+
 /**
  * Removes the given link from the list, but doesn't
  * free it. _dbus_list_remove_link() both removes the
@@ -785,6 +820,42 @@ _dbus_list_length_is_one (DBusList **list)
   return (*list != NULL &&
           (*list)->next == *list);
 }
+
+/**
+ * Append the list elements to a string
+ *
+ * @param list the list
+ * @param string append to this string
+ * @param separator a string separating each container name
+ * @returns #FALSE if no memory
+ */
+dbus_bool_t
+_dbus_list_to_string_append (DBusList **list,
+                             DBusString *string,
+                             const char *separator)
+{
+  DBusList *link;
+  dbus_bool_t separate;
+
+  link = *list;
+  separate = FALSE;
+  while (link != NULL)
+    {
+      DBusList *next = _dbus_list_get_next_link (list, link);
+
+      if (separate && !_dbus_string_append(string, separator))
+        return FALSE;
+
+      separate = TRUE;
+      if (!_dbus_string_append(string, (const char*)link->data))
+        return FALSE;
+
+      link = next;
+    }
+
+    return TRUE;
+}
+
 
 /** @} */
 

@@ -71,6 +71,10 @@ DBUS_PRIVATE_EXPORT
 DBusList*   _dbus_list_find_last          (DBusList **list,
                                            void      *data);
 DBUS_PRIVATE_EXPORT
+int         _dbus_list_cmp                (DBusList **list,
+                                           DBusList **cmp,
+                                           DBusCompareFunction function);
+DBUS_PRIVATE_EXPORT
 void        _dbus_list_clear              (DBusList **list);
 DBUS_PRIVATE_EXPORT
 DBusList*   _dbus_list_get_first_link     (DBusList **list);
@@ -106,6 +110,10 @@ void        _dbus_list_prepend_link       (DBusList **list,
                                            DBusList  *link);
 DBUS_PRIVATE_EXPORT
 dbus_bool_t _dbus_list_length_is_one      (DBusList **list);
+DBUS_PRIVATE_EXPORT
+dbus_bool_t _dbus_list_to_string_append   (DBusList **list,
+                                           DBusString *string,
+                                           const char *separator);
 
 
 DBUS_PRIVATE_EXPORT

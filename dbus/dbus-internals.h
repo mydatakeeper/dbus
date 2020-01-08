@@ -284,6 +284,9 @@ char**      _dbus_dup_string_array      (const char **array);
 typedef void (* DBusForeachFunction) (void *element,
                                       void *data);
 
+typedef int  (* DBusCompareFunction) (void *element,
+                                      void *data);
+
 void _dbus_verbose_bytes           (const unsigned char *data,
                                     int                  len,
                                     int                  offset);

@@ -1434,6 +1434,23 @@ AS_HELP_STRING([--with-systemduserunitdir=DIR], [Directory for systemd user serv
     ])
 AC_SUBST([systemduserunitdir], [$with_systemduserunitdir])
 
+##### systemd nspawn files
+AC_ARG_WITH([systemdnspawnrundir],
+AS_HELP_STRING([--with-systemdnspawnrundir=DIR], [Directory for systemd nspawn machine files]),
+    [with_systemdnspawnrundir=$withval],
+    [with_systemdnspawnrundir=])
+
+if test "x$with_systemdnspawnrundir" != "x"; then
+    # the user specified something, trust them
+    DBUS_SYSTEMD_NSPAWN_RUN_DIR="$with_systemdnspawnrundir"
+else
+    DBUS_SYSTEMD_NSPAWN_RUN_DIR="/run/systemd/machines"
+fi
+AC_SUBST([DBUS_SYSTEMD_NSPAWN_RUN_DIR])
+AC_DEFINE_UNQUOTED([DBUS_SYSTEMD_NSPAWN_RUN_DIR],
+  ["$DBUS_SYSTEMD_NSPAWN_RUN_DIR"],
+  [Directory for systemd nspawn machine files])
+
 ##### Set up location for system bus socket
 if ! test -z "$with_system_socket"; then
    DBUS_SYSTEM_SOCKET=$with_system_socket
