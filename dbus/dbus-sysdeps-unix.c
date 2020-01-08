@@ -1904,6 +1904,44 @@ out:
 #endif
 }
 
+/*
+ * return FALSE on OOM,
+ *        TRUE otherwise, even if no container were accessible/found
+ */
+static dbus_bool_t
+add_systemd_nspawn_machines_names_to_credentials (DBusCredentials *credentials)
+{
+  DIR *d = NULL;
+  struct dirent *de;
+
+  /* Read in machine data stored on disk */
+  d = opendir(DBUS_SYSTEMD_NSPAWN_RUN_DIR);
+  if (!d)
+    {
+      _dbus_verbose ("Failed to open folder %s: %s\n",
+                     DBUS_SYSTEMD_NSPAWN_RUN_DIR, _dbus_strerror (errno));
+
+      return TRUE;
+    }
+
+  while ((de = readdir(d)) != NULL)
+    {
+      // Check file type
+      if (de->d_type != DT_REG && de->d_type != DT_LNK && de->d_type != DT_UNKNOWN)
+        continue;
+
+      // Check file name
+      if (de->d_name[0] == '.' || strncmp(de->d_name, "unit:", 5) == 0)
+        continue;
+
+      // Append container name
+      if (!_dbus_credentials_add_container(credentials, de->d_name))
+        return FALSE;
+    }
+
+  return TRUE;
+}
+
 /**
  * Reads a single byte which must be nul (an error occurs otherwise),
  * and reads unix credentials if available. Clears the credentials
@@ -2233,6 +2271,12 @@ _dbus_read_credentials_socket  (DBusSocket       client_fd,
     }
 
   if (!add_linux_security_label_to_credentials (client_fd.fd, credentials))
+    {
+      _DBUS_SET_OOM (error);
+      return FALSE;
+    }
+
+  if (!add_systemd_nspawn_machines_names_to_credentials(credentials))
     {
       _DBUS_SET_OOM (error);
       return FALSE;
@@ -2694,6 +2738,8 @@ _dbus_credentials_add_from_current_process (DBusCredentials *credentials)
   if (!_dbus_credentials_add_pid(credentials, _dbus_getpid()))
     return FALSE;
   if (!_dbus_credentials_add_unix_uid(credentials, _dbus_geteuid()))
+    return FALSE;
+  if (!add_systemd_nspawn_machines_names_to_credentials(credentials))
     return FALSE;
 
   return TRUE;
